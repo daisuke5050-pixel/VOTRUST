@@ -1,0 +1,1322 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SolVote - 改ざんできない透明キャラ投票</title>
+<!-- @solana/web3.js (ブラウザ向け IIFE ビルド / グローバル変数 solanaWeb3 を公開) -->
+<script src="https://unpkg.com/@solana/web3.js@1.95.3/lib/index.iife.min.js"></script>
+<!-- web3.js の一部（SystemProgram.transfer の u64 エンコード）がグローバル Buffer を参照するためのポリフィル -->
+<script type="module">
+  import { Buffer } from 'https://cdn.jsdelivr.net/npm/buffer@6.0.3/+esm';
+  window.Buffer = window.Buffer || Buffer;
+  window.dispatchEvent(new Event('buffer-ready'));
+</script>
+<style>
+  :root {
+    --bg: #0d0f16; --panel: #171a24; --panel2: #1f2330; --border: #2c3142;
+    --text: #e6e8ef; --muted: #8b91a5; --accent: #9945ff; --accent2: #14f195;
+    --ok: #14f195; --warn: #ffb547; --err: #ff5c7a; --info: #4fa3ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+         background: radial-gradient(1200px 500px at 10% -10%, rgba(153,69,255,.18), transparent),
+                     radial-gradient(1000px 500px at 100% 0%, rgba(20,241,149,.10), transparent), var(--bg);
+         background-attachment: fixed; color: var(--text); font-size: 14px; min-height: 100vh; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+           padding: 16px 24px; border-bottom: 1px solid var(--border); background: rgba(23,26,36,.85);
+           backdrop-filter: blur(8px); position: sticky; top: 0; z-index: 50; }
+  header h1 { font-size: 21px; margin: 0; letter-spacing: .02em; }
+  header h1 .logo { background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text;
+                    background-clip: text; color: transparent; font-weight: 800; }
+  header .sub { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+           font-size: 12px; border: 1px solid var(--border); background: var(--panel2); white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .dot.err { background: var(--err); }
+  .dot.warn { background: var(--warn); }
+  .wallet-chip { display: inline-flex; align-items: center; gap: 8px; padding: 5px 6px 5px 12px; border-radius: 999px;
+                 border: 1px solid var(--border); background: var(--panel2); }
+  .wallet-chip b { color: var(--accent2); }
+  main { max-width: 1200px; margin: 0 auto; padding: 22px 20px 60px; display: grid; gap: 20px; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px; min-width: 0; }
+  .card h2 { font-size: 15px; margin: 0 0 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .full { grid-column: 1 / -1; }
+  label { display: block; color: var(--muted); font-size: 12px; margin: 12px 0 4px; }
+  input { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+          background: var(--panel2); color: var(--text); font-size: 14px; font-family: inherit; }
+  input:focus { outline: none; border-color: var(--accent); }
+  .hint { font-size: 12px; margin-top: 6px; min-height: 16px; color: var(--muted); }
+  .hint.err { color: var(--err); } .hint.ok { color: var(--ok); } .hint.warn { color: var(--warn); }
+  button { padding: 9px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel2);
+           color: var(--text); cursor: pointer; font-size: 14px; font-family: inherit; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: linear-gradient(90deg, var(--accent), #6f3bd8); border: none; font-weight: 600; }
+  button.small { padding: 4px 10px; font-size: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row > input { flex: 1; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; word-break: break-all; }
+  .muted { color: var(--muted); }
+  .balance { font-size: 30px; font-weight: 700; margin: 6px 0; }
+  .balance small { font-size: 14px; color: var(--muted); font-weight: 400; }
+  .wallet-list { display: grid; gap: 8px; }
+  .wallet-list button { text-align: left; display: flex; justify-content: space-between; align-items: center; }
+  a { color: var(--info); }
+  .banner { grid-column: 1 / -1; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--err);
+            background: rgba(255,92,122,.1); color: var(--err); display: none; }
+
+  /* ---- キャラクター投票カード ---- */
+  .section-title { grid-column: 1 / -1; display: flex; align-items: end; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: -6px; }
+  .section-title h2 { margin: 0; font-size: 18px; }
+  .chars { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  @media (max-width: 900px) { .chars { grid-template-columns: 1fr; } }
+  .char { position: relative; overflow: hidden; border-radius: 18px; padding: 22px 18px 18px; text-align: center;
+          background: linear-gradient(170deg, color-mix(in srgb, var(--c) 22%, var(--panel)) 0%, var(--panel) 55%);
+          border: 1px solid color-mix(in srgb, var(--c) 45%, var(--border));
+          box-shadow: 0 10px 30px -12px color-mix(in srgb, var(--c) 55%, transparent); transition: transform .2s, box-shadow .2s; }
+  .char:hover { transform: translateY(-3px); box-shadow: 0 16px 36px -12px color-mix(in srgb, var(--c) 75%, transparent); }
+  .char .crown { position: absolute; top: 12px; right: 14px; font-size: 22px; display: none; animation: bob 1.6s ease-in-out infinite; }
+  .char.leader .crown { display: block; }
+  .char .avatar { width: 108px; height: 108px; margin: 0 auto 12px; border-radius: 50%; display: grid; place-items: center;
+                  font-size: 60px; background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--c) 55%, #fff 10%), color-mix(in srgb, var(--c) 25%, var(--panel2)));
+                  box-shadow: 0 0 0 4px color-mix(in srgb, var(--c) 35%, transparent), 0 0 34px color-mix(in srgb, var(--c) 45%, transparent);
+                  animation: bob 3s ease-in-out infinite; }
+  .char:nth-child(2) .avatar { animation-delay: -1s; } .char:nth-child(3) .avatar { animation-delay: -2s; }
+  @keyframes bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+  .char .cname { font-size: 19px; font-weight: 800; }
+  .char .cdesc { color: var(--muted); margin: 6px 0 12px; font-size: 13px; }
+  .char .cvotes { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+  .char .cvotes b { font-size: 26px; color: var(--c); margin: 0 3px; }
+  .char .caddr { display: flex; align-items: center; justify-content: center; gap: 6px; flex-wrap: wrap; font-size: 12px;
+                 padding: 7px; border-radius: 8px; background: rgba(0,0,0,.25); margin-bottom: 14px; }
+  .char .vote-btn { width: 100%; padding: 12px; font-size: 15px; font-weight: 700; border: none; color: #fff;
+                    background: linear-gradient(90deg, var(--c), color-mix(in srgb, var(--c) 60%, #000)); }
+  .char .vote-btn:hover:not(:disabled) { filter: brightness(1.15); }
+  .char .vote-btn.busy { animation: busy 1s infinite; }
+  @keyframes busy { 50% { filter: brightness(1.35); } }
+  .char.invalid { opacity: .6; }
+
+  /* ---- 集計グラフ ---- */
+  .tally-row { display: grid; grid-template-columns: 190px 1fr 120px; align-items: center; gap: 12px; margin: 14px 0; }
+  @media (max-width: 640px) { .tally-row { grid-template-columns: 1fr; gap: 4px; } }
+  .tally-name { font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .tally-name .ic { font-size: 24px; }
+  .bar { position: relative; height: 26px; background: var(--panel2); border-radius: 13px; overflow: hidden; border: 1px solid var(--border); }
+  .bar > div { height: 100%; width: 0; border-radius: 13px; transition: width 1.1s cubic-bezier(.2,.9,.25,1);
+               background: linear-gradient(90deg, color-mix(in srgb, var(--c) 55%, #000), var(--c)); position: relative; overflow: hidden; }
+  .bar > div::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.28), transparent);
+                      transform: translateX(-100%); animation: shine 2.4s infinite; }
+  @keyframes shine { to { transform: translateX(100%); } }
+  .bar.flash { box-shadow: 0 0 0 2px var(--c), 0 0 18px var(--c); transition: box-shadow .3s; }
+  .tally-num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tally-num b { font-size: 20px; } .tally-num span { color: var(--muted); font-size: 12px; margin-left: 6px; }
+  .tally-addr { grid-column: 1 / -1; font-size: 11.5px; color: var(--muted); margin-top: -8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .tally-foot { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; border-top: 1px dashed var(--border); padding-top: 12px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+
+  /* ---- 投票フロー可視化 ---- */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 6px 0 14px; }
+  .step { position: relative; padding: 10px 6px; border-radius: 8px; background: var(--panel2);
+          border: 1px solid var(--border); text-align: center; transition: all .25s; }
+  .step .icon { width: 28px; height: 28px; border-radius: 50%; margin: 0 auto 6px; display: grid; place-items: center;
+                background: var(--border); font-size: 13px; font-weight: 700; }
+  .step .name { font-size: 12px; font-weight: 600; }
+  .step .time { font-size: 11px; color: var(--muted); margin-top: 2px; min-height: 14px; }
+  .step.active { border-color: var(--info); }
+  .step.active .icon { background: var(--info); animation: pulse 1s infinite; }
+  .step.done { border-color: rgba(20,241,149,.5); }
+  .step.done .icon { background: var(--ok); color: #000; }
+  .step.error { border-color: var(--err); }
+  .step.error .icon { background: var(--err); }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(79,163,255,.6); } 50% { box-shadow: 0 0 0 8px rgba(79,163,255,0); } }
+  .progress { height: 6px; background: var(--panel2); border-radius: 3px; overflow: hidden; margin-bottom: 12px; }
+  .progress > div { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width .4s; }
+  .log { background: #0b0d12; border: 1px solid var(--border); border-radius: 8px; padding: 10px; height: 200px;
+         overflow-y: auto; font-family: ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.6; }
+  .log .t { color: var(--muted); } .log .ok { color: var(--ok); } .log .err { color: var(--err); }
+  .log .warn { color: var(--warn); } .log .info { color: var(--info); }
+  .sigbox { margin-top: 10px; font-size: 12px; }
+
+  /* ---- 履歴 ---- */
+  .tabs { display: flex; gap: 4px; }
+  .tabs button { padding: 5px 12px; font-size: 12px; }
+  .tabs button.active { background: var(--accent); border-color: var(--accent); }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 9px 8px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  tr.new { animation: flash 2s; }
+  @keyframes flash { from { background: rgba(20,241,149,.18); } to { background: transparent; } }
+  .dir { padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+  .dir.out { background: rgba(255,92,122,.15); color: var(--err); }
+  .dir.in { background: rgba(20,241,149,.15); color: var(--ok); }
+  .dir.self { background: rgba(79,163,255,.15); color: var(--info); }
+  .dir.vote { background: color-mix(in srgb, var(--c) 20%, transparent); color: var(--c); }
+  .st { padding: 2px 8px; border-radius: 999px; font-size: 11.5px; border: 1px solid; }
+  .st.finalized { color: var(--ok); border-color: var(--ok); }
+  .st.confirmed { color: var(--info); border-color: var(--info); }
+  .st.processed, .st.pending { color: var(--warn); border-color: var(--warn); }
+  .st.failed { color: var(--err); border-color: var(--err); }
+  .amt.out { color: var(--err); } .amt.in { color: var(--ok); }
+  .addr { cursor: pointer; } .addr:hover { color: var(--accent2); }
+  .empty { text-align: center; color: var(--muted); padding: 28px; }
+
+  /* ---- トースト ---- */
+  .toast-wrap { position: fixed; right: 20px; bottom: 20px; display: grid; gap: 8px; z-index: 300; }
+  .toast { background: var(--panel2); border: 1px solid var(--border); border-left: 4px solid var(--info);
+           padding: 10px 14px; border-radius: 8px; max-width: 360px; animation: slide .3s; box-shadow: 0 6px 20px rgba(0,0,0,.4); }
+  .toast.ok { border-left-color: var(--ok); } .toast.err { border-left-color: var(--err); } .toast.warn { border-left-color: var(--warn); }
+  @keyframes slide { from { transform: translateX(40px); opacity: 0; } }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 14px; }
+
+  /* ---- モーダル ---- */
+  .modal { position: fixed; inset: 0; z-index: 150; background: rgba(5,6,10,.72); backdrop-filter: blur(4px);
+           display: none; align-items: center; justify-content: center; padding: 20px; }
+  .modal.open { display: flex; animation: fadein .2s; }
+  @keyframes fadein { from { opacity: 0; } }
+  .modal-box { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 20px; width: min(420px, 100%); position: relative; }
+  .modal-close { position: absolute; top: 10px; right: 10px; background: transparent; border: none; font-size: 20px; color: var(--muted); padding: 4px 8px; }
+
+  /* ---- 限定デジタル応援カード ---- */
+  .vcard { position: relative; width: min(400px, 100%); border-radius: 22px; padding: 26px 22px 20px; text-align: center; overflow: hidden;
+           background: linear-gradient(160deg, color-mix(in srgb, var(--c) 45%, #11131b) 0%, #12141c 60%, color-mix(in srgb, var(--c) 25%, #12141c) 100%);
+           border: 2px solid color-mix(in srgb, var(--c) 70%, #fff 10%);
+           box-shadow: 0 0 0 6px color-mix(in srgb, var(--c) 18%, transparent), 0 25px 60px -10px color-mix(in srgb, var(--c) 60%, transparent);
+           animation: cardin .7s cubic-bezier(.2,1.4,.4,1); }
+  @keyframes cardin { from { transform: scale(.6) rotateY(80deg); opacity: 0; } }
+  .vcard::before { content: ""; position: absolute; inset: -40%; pointer-events: none;
+                   background: conic-gradient(from 0deg, transparent, rgba(255,255,255,.10), transparent 30%);
+                   animation: spin 6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .vcard > *:not(.modal-close) { position: relative; }
+  .vcard .modal-close { z-index: 2; }
+  .vc-limited { font-size: 11px; letter-spacing: .25em; color: color-mix(in srgb, var(--c) 60%, #fff); font-weight: 700; }
+  .vc-title { font-size: 17px; font-weight: 800; margin: 2px 0 12px; }
+  .vc-icon { font-size: 86px; line-height: 1; margin: 6px 0 4px; filter: drop-shadow(0 0 18px var(--c)); animation: bob 2.4s ease-in-out infinite; }
+  .vc-name { font-size: 20px; font-weight: 800; }
+  .vc-msg { margin: 12px 0 14px; padding: 12px 14px; border-radius: 12px; background: rgba(0,0,0,.3); font-size: 14px; line-height: 1.6; }
+  .vc-badge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 14px; border-radius: 999px; font-size: 12.5px; font-weight: 700;
+              color: #0b0d12; background: linear-gradient(90deg, #ffd36b, #ffb547); box-shadow: 0 0 16px rgba(255,181,71,.55); margin-bottom: 12px; }
+  .vc-meta { text-align: left; font-size: 12.5px; display: grid; grid-template-columns: auto 1fr; gap: 6px 12px;
+             background: rgba(0,0,0,.28); border-radius: 12px; padding: 12px 14px; }
+  .vc-meta dt { color: var(--muted); } .vc-meta dd { margin: 0; }
+  .vc-sig { display: flex; gap: 6px; align-items: flex-start; }
+  .vc-sig .mono { font-size: 11px; flex: 1; }
+  .vc-actions { display: flex; gap: 8px; justify-content: center; margin-top: 14px; flex-wrap: wrap; }
+  .vc-actions a { display: inline-block; padding: 9px 16px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--border); text-decoration: none; }
+
+  /* ---- 紙吹雪 ---- */
+  #confetti { position: fixed; inset: 0; pointer-events: none; z-index: 200; overflow: hidden; }
+  #confetti i { position: absolute; top: -24px; width: 9px; height: 15px; animation: fall linear forwards; font-style: normal; }
+  #confetti i.emoji { width: auto; height: auto; font-size: 26px; background: none !important; }
+  @keyframes fall { to { transform: translate(var(--dx), 112vh) rotate(var(--r)); } }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>🗳️ <span class="logo">SolVote</span> - 改ざんできない透明キャラ投票</h1>
+    <div class="sub">Solana Devnet上に直接記録される、運営も操作不可能なリアルタイム投票</div>
+  </div>
+  <div class="row">
+    <span class="badge"><span class="dot" id="netDot"></span><span id="netText">Devnet 接続中…</span></span>
+    <span class="badge" id="slotBadge">slot: -</span>
+    <button class="primary" id="connectBtn">👛 Phantom / ウォレット接続</button>
+    <span class="wallet-chip" id="hdrWallet" style="display:none">
+      <span class="dot ok"></span>
+      <span class="mono addr" id="hdrAddr" title="クリックでコピー"></span>
+      <b><span id="hdrBal">-</span> SOL</b>
+      <button class="small" id="hdrDisconnect">切断</button>
+    </span>
+  </div>
+</header>
+
+<main>
+  <div class="banner" id="netBanner"></div>
+
+  <!-- キャラクター投票 -->
+  <div class="section-title">
+    <h2>✨ 推しキャラに投票しよう</h2>
+    <span class="muted" style="font-size:12px">1票 = 0.01 SOL（Devnet）を各キャラの投票先アドレスへ送金</span>
+  </div>
+  <div class="chars" id="chars"></div>
+  <div class="hint full" id="voteHint" style="text-align:center;margin-top:-8px"></div>
+
+  <!-- 集計グラフ -->
+  <section class="card full">
+    <h2>
+      <span>📊 改ざん不可のリアルタイム集計 <span class="muted" style="font-weight:400;font-size:12px">（Devnet の残高から直接計算）</span></span>
+      <button class="small" id="tallyRefreshBtn">↻ 最新結果を取得</button>
+    </h2>
+    <div id="tally"></div>
+    <div class="tally-foot">
+      <span>総投票数: <b id="totalVotes" style="color:var(--text)">-</b> 票　｜　得票数 = 投票先アドレスの残高 ÷ 0.01 SOL（小数点以下切り捨て）</span>
+      <span id="tallyStatus"></span>
+    </div>
+  </section>
+
+  <!-- ウォレット -->
+  <section class="card">
+    <h2>👛 マイウォレット <span id="walletBadge" class="badge"><span class="dot"></span>未接続</span></h2>
+    <div id="walletDisconnected">
+      <p class="muted" style="margin-top:0">投票するにはウォレットを接続してください。ウォレット側のネットワークも <b>Devnet</b> に切り替えてください。</p>
+      <button class="primary" id="connectBtn2" style="width:100%">👛 ウォレットを接続</button>
+      <p class="muted" style="font-size:12px">※ ブラウザ拡張ウォレットは <code>file://</code> では動作しません。README の手順でローカルサーバー経由で開いてください。</p>
+    </div>
+    <div id="walletConnected" style="display:none">
+      <div class="muted" style="font-size:12px">接続中: <b id="walletName"></b></div>
+      <div class="row" style="margin-top:6px">
+        <span class="mono" id="walletAddr"></span>
+        <button class="small" id="copyAddrBtn">コピー</button>
+        <a class="small" id="walletExplorer" target="_blank" rel="noopener">Explorer ↗</a>
+      </div>
+      <div class="balance"><span id="balance">-</span> <small>SOL</small></div>
+      <div class="row">
+        <button id="refreshBtn">↻ 残高更新</button>
+        <button id="airdropBtn" title="RPC の requestAirdrop を試行します（公開 RPC では閉鎖されている場合があります）">💧 エアドロップを試す</button>
+        <button id="disconnectBtn">切断</button>
+      </div>
+      <div class="hint">テスト用 SOL は <a href="https://faucet.solana.com/" target="_blank" rel="noopener">faucet.solana.com ↗</a> で上記アドレスを入力して取得できます（着金は自動で反映されます）。</div>
+      <div class="hint" id="airdropHint"></div>
+    </div>
+    <details>
+      <summary>RPC 設定（Devnet のみ許可）</summary>
+      <label>RPC エンドポイント</label>
+      <div class="row">
+        <input id="rpcInput" class="mono" />
+        <button class="small" id="rpcSaveBtn">適用</button>
+        <button class="small" id="rpcResetBtn">既定に戻す</button>
+      </div>
+      <div class="hint">接続時に genesis hash を照合し、Devnet 以外のエンドポイントは拒否します。</div>
+    </details>
+  </section>
+
+  <!-- 投票処理フロー可視化 -->
+  <section class="card" id="flowCard">
+    <h2>⚡ 投票処理フロー（リアルタイム） <span class="badge" id="flowStatus">待機中</span></h2>
+    <div class="progress"><div id="progressBar"></div></div>
+    <div class="steps" id="steps"></div>
+    <div class="log" id="log"></div>
+    <div class="sigbox" id="sigBox"></div>
+  </section>
+
+  <!-- 履歴 -->
+  <section class="card full">
+    <h2>
+      <span>📜 投票・送受信履歴（検証用） <span class="muted" style="font-weight:400;font-size:12px">（接続中ウォレットの Devnet オンチェーンデータ）</span></span>
+      <span class="row">
+        <span class="tabs" id="tabs">
+          <button data-f="all" class="active">すべて</button>
+          <button data-f="vote">投票</button>
+          <button data-f="out">送信</button>
+          <button data-f="in">受信</button>
+        </span>
+        <button class="small" id="historyRefreshBtn">↻ 更新</button>
+      </span>
+    </h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>日時</th><th>種別</th><th>送信元</th><th>送信先</th><th>数量 (SOL)</th><th>状態</th><th>Tx</th>
+        </tr></thead>
+        <tbody id="historyBody"><tr><td colspan="7" class="empty">ウォレットを接続すると履歴が表示されます</td></tr></tbody>
+      </table>
+    </div>
+    <div style="text-align:center;margin-top:12px">
+      <button class="small" id="moreBtn" style="display:none">さらに読み込む</button>
+      <span class="muted" id="historyStatus" style="font-size:12px"></span>
+    </div>
+  </section>
+</main>
+
+<!-- ウォレット選択モーダル -->
+<div class="modal" id="walletModal">
+  <div class="modal-box">
+    <button class="modal-close" data-close="walletModal">✕</button>
+    <h2 style="margin:0 0 12px;font-size:16px">👛 ウォレットを選択</h2>
+    <p class="muted" style="margin-top:0;font-size:12.5px">ウォレット側のネットワークを <b>Devnet</b> にしてから接続してください。</p>
+    <div class="wallet-list" id="walletList"></div>
+  </div>
+</div>
+
+<!-- 限定デジタル応援カード -->
+<div class="modal" id="cardModal">
+  <div class="vcard" id="vcard">
+    <button class="modal-close" data-close="cardModal">✕</button>
+    <div class="vc-limited">LIMITED DIGITAL CHEER CARD</div>
+    <div class="vc-title">限定デジタル応援カード</div>
+    <div class="vc-badge">🔗 公式オンチェーン投票証明</div>
+    <div class="vc-icon" id="vcIcon"></div>
+    <div class="vc-name" id="vcName"></div>
+    <div class="vc-msg" id="vcMsg"></div>
+    <dl class="vc-meta">
+      <dt>投票者</dt><dd class="mono" id="vcVoter"></dd>
+      <dt>投票日時</dt><dd id="vcDate"></dd>
+      <dt>投票数量</dt><dd>0.01 SOL（1 票）</dd>
+      <dt>記録スロット</dt><dd id="vcSlot"></dd>
+      <dt>状態</dt><dd id="vcStatus"></dd>
+      <dt>署名</dt><dd class="vc-sig"><span class="mono" id="vcSig"></span><button class="small" id="vcCopy">コピー</button></dd>
+    </dl>
+    <div class="vc-actions">
+      <a id="vcExplorer" target="_blank" rel="noopener">🔍 Solana Explorer で確認 ↗</a>
+      <button data-close="cardModal">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<div id="confetti"></div>
+<div class="toast-wrap" id="toasts"></div>
+
+<script>
+// =====================================================================
+//  キャラクター設定（名前・アイコン・色・メッセージ・投票先アドレスはここを書き換えるだけで変更できます）
+// =====================================================================
+const CHARACTERS = [
+  {
+    id: 'soranyan',
+    name: 'ソラにゃん（仮）',
+    icon: '🐱',
+    color: '#a35bff',   // 紫
+    description: 'スピード重視の元気な看板猫',
+    thanks: '投票ありがとうにゃ！キミの1票はブロックチェーンにずっと残るよ！',
+    address: '8jDVrbgUF2V2h6KZLPfxEMm1jJg9QkXfFNQyTjRuqtVU',
+  },
+  {
+    id: 'chainken',
+    name: 'チェイン犬（仮）',
+    icon: '🐶',
+    color: '#3d9bff',   // 青
+    description: '約束を守る正直者の番犬',
+    thanks: 'ワン！公平な応援ありがとう！一緒に1位を目指そう！',
+    address: '6XzScszLJyQW18D7i5kbc4Xg2YgaN7rHfk1irL3vFN2Z',
+  },
+  {
+    id: 'blockma',
+    name: 'ブロックま（仮）',
+    icon: '🐻',
+    color: '#19d98b',   // 緑
+    description: 'のんびりだけど力持ちの癒やし系',
+    thanks: '応援ありがとうくま〜！キミの1票がぼくの力になるよ！',
+    address: 'EdyNSxnnfQorivmyqgeBQdYHPToFcepri9ezLXcaNPDP',
+  },
+];
+const VOTE_SOL = 0.01; // 1 票あたりの送金額 (SOL)
+
+(() => {
+'use strict';
+
+if (!window.solanaWeb3) {
+  document.body.innerHTML = '<p style="padding:40px;color:#ff5c7a">@solana/web3.js の読み込みに失敗しました。ネットワーク接続を確認してください。</p>';
+  return;
+}
+const { Connection, PublicKey, SystemProgram, Transaction, Keypair, LAMPORTS_PER_SOL } = solanaWeb3;
+
+// ===== 定数 =====
+const DEFAULT_RPC = 'https://api.devnet.solana.com';
+const DEVNET_GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG';
+const DEFAULT_FEE = 5000;
+const VOTE_LAMPORTS = Math.round(VOTE_SOL * LAMPORTS_PER_SOL);
+const HISTORY_PAGE = 10;
+const TALLY_POLL_MS = 30000;
+const STEPS = [
+  { id: 'build',     name: '構築',      desc: 'トランザクション構築' },
+  { id: 'sign',      name: '署名',      desc: 'ウォレットで署名' },
+  { id: 'send',      name: '送信',      desc: 'RPC へブロードキャスト' },
+  { id: 'processed', name: 'Processed', desc: 'リーダーが処理' },
+  { id: 'confirmed', name: 'Confirmed', desc: '過半数が投票' },
+  { id: 'finalized', name: 'Finalized', desc: '確定（ロールバック不可）' },
+];
+const STATUS_LABEL = { pending: '送信中', processed: 'Processed', confirmed: 'Confirmed', finalized: 'Finalized', failed: '失敗' };
+
+// キャラ設定の検証（【】や空白が混ざっていても除去して解釈）
+CHARACTERS.forEach(c => {
+  try {
+    c.pubkey = new PublicKey(String(c.address).replace(/[【】\s]/g, ''));
+    c.address = c.pubkey.toBase58();
+  } catch { c.pubkey = null; c.invalid = true; }
+});
+
+// ===== 状態 =====
+let rpcUrl = localStorage.getItem('devnet_rpc') || DEFAULT_RPC;
+let connection = null;
+let networkOk = false;
+let wallet = null;          // { name, publicKey, signTransaction, disconnect }
+let balanceLamports = 0;
+let currentFee = DEFAULT_FEE;
+let sending = false;
+let sendingIdx = -1;
+let accountSubId = null;
+let slotSubId = null;
+let charSubIds = [];
+let tallyLamports = CHARACTERS.map(() => null);
+let tallyLoading = false;
+let historyMap = new Map(); // key: signature#index -> record
+let pendingMap = new Map(); // 本アプリから送信中のTx（オンチェーン未反映分）
+let historyBefore = null;
+let historyFilter = 'all';
+let historyLoading = false;
+let knownSigs = new Set();
+let historyTimer = null;
+let pagedMore = false;
+let lastHistoryLoad = 0;
+let cardSignature = null;
+
+const $ = (id) => document.getElementById(id);
+
+// ===== ユーティリティ =====
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const short = (s, n = 4) => s ? `${s.slice(0, n)}…${s.slice(-n)}` : '-';
+const fmtSol = (lamports) => (lamports / LAMPORTS_PER_SOL).toLocaleString('ja-JP', { maximumFractionDigits: 9 });
+const fmtDate = (d) => d ? d.toLocaleString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '-';
+const explorerTx = (sig) => `https://explorer.solana.com/tx/${sig}?cluster=devnet`;
+const explorerAddr = (a) => `https://explorer.solana.com/address/${a}?cluster=devnet`;
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const charIndexOf = (addr) => CHARACTERS.findIndex(c => c.address === addr);
+const copy = (text, label = 'コピーしました') => { navigator.clipboard.writeText(text); toast(label, 'ok', 2000); };
+
+// 公開 Devnet RPC の 429 / 一時的な通信エラーに対する指数バックオフ付きリトライ
+async function withRetry(fn, label = 'RPC', tries = 5) {
+  let delay = 800;
+  for (let i = 0; ; i++) {
+    try { return await fn(); }
+    catch (e) {
+      const msg = String(e?.message || e);
+      const retriable = /429|too many|rate|fetch|network|timeout|50[234]/i.test(msg);
+      if (!retriable || i >= tries - 1) throw e;
+      console.warn(`${label}: リトライ ${i + 1}/${tries - 1} (${msg})`);
+      await sleep(delay + Math.random() * 400);
+      delay *= 2;
+    }
+  }
+}
+
+// Base58 エンコード（署名をブロードキャスト前に表示するため）
+const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+function base58(bytes) {
+  const digits = [];
+  for (const byte of bytes) {
+    let carry = byte;
+    for (let j = 0; j < digits.length; j++) { carry += digits[j] << 8; digits[j] = carry % 58; carry = (carry / 58) | 0; }
+    while (carry) { digits.push(carry % 58); carry = (carry / 58) | 0; }
+  }
+  let out = '';
+  for (const b of bytes) { if (b !== 0) break; out += '1'; }
+  for (let i = digits.length - 1; i >= 0; i--) out += B58[digits[i]];
+  return out;
+}
+
+function toast(msg, type = 'info', ms = 4500) {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = msg;
+  $('toasts').appendChild(el);
+  setTimeout(() => el.remove(), ms);
+}
+
+// 数値のカウントアップアニメーション
+function animateNumber(el, to, decimals = 0, suffix = '') {
+  const from = Number(el.dataset.v || 0);
+  el.dataset.v = to;
+  const start = performance.now(), dur = 900;
+  const tick = (now) => {
+    const p = Math.min(1, (now - start) / dur);
+    const e = 1 - Math.pow(1 - p, 3);
+    el.textContent = (from + (to - from) * e).toLocaleString('ja-JP', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }) + suffix;
+    if (p < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+// ===== モーダル / 紙吹雪 =====
+function openModal(id) { $(id).classList.add('open'); }
+function closeModal(id) { $(id).classList.remove('open'); }
+document.addEventListener('click', (e) => {
+  const c = e.target.closest('[data-close]');
+  if (c) closeModal(c.dataset.close);
+  else if (e.target.classList?.contains('modal')) closeModal(e.target.id);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.querySelectorAll('.modal.open').forEach(m => m.classList.remove('open')); });
+
+function confetti(icon, color) {
+  const wrap = $('confetti');
+  const colors = [color, '#9945ff', '#14f195', '#4fa3ff', '#ffb547', '#ff5c7a', '#ffffff'];
+  for (let i = 0; i < 150; i++) {
+    const p = document.createElement('i');
+    const isEmoji = i % 10 === 0;
+    if (isEmoji) { p.className = 'emoji'; p.textContent = icon; }
+    else {
+      p.style.background = colors[i % colors.length];
+      if (i % 3 === 0) p.style.borderRadius = '50%';
+    }
+    p.style.left = `${Math.random() * 100}vw`;
+    p.style.animationDuration = `${2.6 + Math.random() * 2.2}s`;
+    p.style.animationDelay = `${Math.random() * .7}s`;
+    p.style.setProperty('--dx', `${Math.random() * 240 - 120}px`);
+    p.style.setProperty('--r', `${Math.random() * 900 - 450}deg`);
+    wrap.appendChild(p);
+    setTimeout(() => p.remove(), 6000);
+  }
+}
+
+// ===== 限定デジタル応援カード =====
+function showVoteCard({ idx, signature, voter, date, slot, status }) {
+  const c = CHARACTERS[idx];
+  cardSignature = signature;
+  $('vcard').style.setProperty('--c', c.color);
+  $('vcIcon').textContent = c.icon;
+  $('vcName').textContent = c.name;
+  $('vcMsg').textContent = `「${c.thanks}」`;
+  $('vcVoter').textContent = short(voter, 6);
+  $('vcVoter').title = voter;
+  $('vcDate').textContent = fmtDate(date);
+  $('vcSlot').textContent = slot != null ? `#${slot.toLocaleString()}` : '-';
+  $('vcSig').textContent = signature;
+  $('vcExplorer').href = explorerTx(signature);
+  updateVoteCardStatus(signature, status);
+  // アニメーションを再生し直す
+  const card = $('vcard'); card.style.animation = 'none'; void card.offsetWidth; card.style.animation = '';
+  openModal('cardModal');
+  confetti(c.icon, c.color);
+}
+function updateVoteCardStatus(signature, status) {
+  if (signature !== cardSignature) return;
+  $('vcStatus').innerHTML = `<span class="st ${status}">${STATUS_LABEL[status] || status}</span>` +
+    (status === 'finalized' ? ' <span class="muted">ロールバック不可で確定 ✓</span>' : ' <span class="muted">Finalized 待ち…</span>');
+}
+$('vcCopy').onclick = () => cardSignature && copy(cardSignature, '署名をコピーしました');
+
+// ===== キャラカード / 集計の描画 =====
+function renderCharacters() {
+  $('chars').innerHTML = CHARACTERS.map((c, i) => `
+    <div class="char ${c.invalid ? 'invalid' : ''}" style="--c:${esc(c.color)}" id="char-${i}">
+      <div class="crown" title="現在 1 位">👑</div>
+      <div class="avatar">${esc(c.icon)}</div>
+      <div class="cname">${esc(c.name)}</div>
+      <div class="cdesc">${esc(c.description)}</div>
+      <div class="cvotes">現在<b id="cvotes-${i}">-</b>票</div>
+      <div class="caddr">
+        ${c.invalid
+          ? '<span style="color:var(--err)">⚠ 投票先アドレスが不正です（CHARACTERS を確認）</span>'
+          : `<span class="mono addr" data-copy="${c.address}" title="${c.address}（クリックでコピー）">${short(c.address, 5)}</span>
+             <a href="${explorerAddr(c.address)}" target="_blank" rel="noopener">Explorerで検証 ↗</a>`}
+      </div>
+      <button class="vote-btn" data-vote="${i}">🗳️ ${VOTE_SOL} SOLで投票する</button>
+    </div>`).join('');
+
+  $('tally').innerHTML = CHARACTERS.map((c, i) => `
+    <div style="--c:${esc(c.color)}">
+      <div class="tally-row">
+        <div class="tally-name"><span class="ic">${esc(c.icon)}</span>${esc(c.name)}</div>
+        <div class="bar" id="bar-${i}"><div id="barfill-${i}"></div></div>
+        <div class="tally-num"><b id="tvotes-${i}">-</b> 票<span id="tpct-${i}">-</span></div>
+        <div class="tally-addr">
+          ${c.invalid ? '<span style="color:var(--err)">アドレス不正</span>' : `
+          <span>投票先:</span><span class="mono addr" data-copy="${c.address}" title="クリックでコピー">${c.address}</span>
+          <span>残高: <span id="tbal-${i}">-</span> SOL</span>
+          <a href="${explorerAddr(c.address)}" target="_blank" rel="noopener">Explorerで検証 ↗</a>`}
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+function renderTally() {
+  const votes = tallyLamports.map(l => l == null ? null : Math.floor(l / VOTE_LAMPORTS));
+  const loaded = votes.filter(v => v != null);
+  const total = loaded.reduce((a, b) => a + b, 0);
+  const max = loaded.length ? Math.max(...loaded) : 0;
+  votes.forEach((v, i) => {
+    if (v == null) return;
+    const pct = total ? (v / total) * 100 : 0;
+    $(`barfill-${i}`).style.width = `${pct}%`;
+    animateNumber($(`tvotes-${i}`), v);
+    animateNumber($(`tpct-${i}`), pct, 1, '%');
+    animateNumber($(`cvotes-${i}`), v);
+    $(`tbal-${i}`).textContent = fmtSol(tallyLamports[i]);
+    $(`char-${i}`).classList.toggle('leader', max > 0 && v === max);
+  });
+  animateNumber($('totalVotes'), total);
+}
+
+function flashBar(i) {
+  const b = $(`bar-${i}`);
+  if (!b) return;
+  b.classList.add('flash');
+  setTimeout(() => b.classList.remove('flash'), 1200);
+}
+
+// 3 キャラの残高を getMultipleAccountsInfo で 1 リクエストにまとめて取得（429 対策）
+async function loadTally(manual = false) {
+  if (!networkOk || tallyLoading) return;
+  const targets = CHARACTERS.map((c, i) => ({ c, i })).filter(x => x.c.pubkey);
+  if (!targets.length) return;
+  tallyLoading = true;
+  $('tallyRefreshBtn').disabled = true;
+  $('tallyStatus').textContent = '集計中…';
+  try {
+    const infos = await withRetry(
+      () => connection.getMultipleAccountsInfo(targets.map(x => x.c.pubkey), 'confirmed'), '集計');
+    targets.forEach((x, j) => {
+      const lamports = infos[j] ? infos[j].lamports : 0; // 未作成アカウントは 0 票
+      if (tallyLamports[x.i] !== null && tallyLamports[x.i] !== lamports) flashBar(x.i);
+      tallyLamports[x.i] = lamports;
+    });
+    renderTally();
+    $('tallyStatus').textContent = `最終集計: ${new Date().toLocaleTimeString('ja-JP')}（getMultipleAccountsInfo）`;
+    if (manual) toast('最新の投票結果を取得しました', 'ok', 2000);
+  } catch (e) {
+    console.error(e);
+    $('tallyStatus').textContent = `集計の取得に失敗しました: ${e.message || e}`;
+  } finally {
+    tallyLoading = false;
+    $('tallyRefreshBtn').disabled = false;
+  }
+}
+
+// 投票先アドレスの残高変化を WebSocket で購読（HTTP リクエストを増やさずにリアルタイム反映）
+async function subscribeCharacters() {
+  await unsubscribeCharacters();
+  if (!connection || !networkOk) return;
+  charSubIds = CHARACTERS.map((c, i) => c.pubkey ? connection.onAccountChange(c.pubkey, (info) => {
+    if (tallyLamports[i] !== info.lamports) flashBar(i);
+    tallyLamports[i] = info.lamports;
+    renderTally();
+    $('tallyStatus').textContent = `リアルタイム更新: ${new Date().toLocaleTimeString('ja-JP')}（${c.icon} の残高変化を検知）`;
+  }, 'confirmed') : null);
+}
+async function unsubscribeCharacters() {
+  const conn = connection;
+  for (const id of charSubIds) if (id !== null && conn) { try { await conn.removeAccountChangeListener(id); } catch {} }
+  charSubIds = [];
+}
+
+function updateVoteButtons() {
+  const enough = balanceLamports >= VOTE_LAMPORTS + currentFee;
+  document.querySelectorAll('[data-vote]').forEach(btn => {
+    const i = Number(btn.dataset.vote);
+    const c = CHARACTERS[i];
+    btn.classList.toggle('busy', sending && sendingIdx === i);
+    btn.disabled = !networkOk || sending || c.invalid || (wallet && !enough);
+    btn.textContent = sending && sendingIdx === i ? '⏳ 投票処理中…' : `🗳️ ${VOTE_SOL} SOLで投票する`;
+  });
+  const hint = $('voteHint');
+  if (!networkOk) { hint.className = 'hint full err'; hint.textContent = 'Devnet に接続できないため投票できません'; }
+  else if (!wallet) { hint.className = 'hint full'; hint.textContent = '投票ボタンを押すとウォレット接続画面が開きます'; }
+  else if (!enough) { hint.className = 'hint full warn'; hint.innerHTML = `残高不足です（1 票に ${fmtSol(VOTE_LAMPORTS + currentFee)} SOL 必要）。<a href="https://faucet.solana.com/" target="_blank" rel="noopener">faucet.solana.com</a> でテスト用 SOL を取得してください`; }
+  else { hint.className = 'hint full'; hint.textContent = `残高 ${fmtSol(balanceLamports)} SOL / あと約 ${Math.floor(balanceLamports / (VOTE_LAMPORTS + currentFee))} 票投票できます`; }
+}
+
+// ===== ログ / ステップ可視化 =====
+let flowStart = 0;
+function log(msg, type = '') {
+  const t = new Date();
+  const el = document.createElement('div');
+  const elapsed = flowStart ? ` +${((performance.now() - flowStart) / 1000).toFixed(2)}s` : '';
+  el.innerHTML = `<span class="t">[${t.toLocaleTimeString('ja-JP')}.${String(t.getMilliseconds()).padStart(3, '0')}${elapsed}]</span> <span class="${type}">${msg}</span>`;
+  $('log').appendChild(el);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+function renderSteps() {
+  $('steps').innerHTML = STEPS.map((s, i) => `
+    <div class="step" id="step-${s.id}" title="${s.desc}">
+      <div class="icon">${i + 1}</div>
+      <div class="name">${s.name}</div>
+      <div class="time" id="step-${s.id}-time">${s.desc}</div>
+    </div>`).join('');
+}
+function setStep(id, state, timeText) {
+  const el = $(`step-${id}`);
+  el.className = `step ${state || ''}`;
+  const icon = el.querySelector('.icon');
+  const idx = STEPS.findIndex(s => s.id === id);
+  icon.textContent = state === 'done' ? '✓' : state === 'error' ? '✕' : idx + 1;
+  if (timeText !== undefined) $(`step-${id}-time`).textContent = timeText;
+  const doneCount = STEPS.filter(s => $(`step-${s.id}`).classList.contains('done')).length;
+  $('progressBar').style.width = `${(doneCount / STEPS.length) * 100}%`;
+}
+function stepElapsed() { return `${((performance.now() - flowStart) / 1000).toFixed(2)}s`; }
+function setFlowStatus(text, type) {
+  $('flowStatus').innerHTML = `<span class="dot ${type || ''}"></span>${text}`;
+}
+
+// ===== ネットワーク（Devnet 限定チェック） =====
+async function initConnection() {
+  networkOk = false;
+  await unsubscribeCharacters();
+  if (slotSubId !== null && connection) { try { await connection.removeSlotChangeListener(slotSubId); } catch {} slotSubId = null; }
+  $('netDot').className = 'dot warn';
+  $('netText').textContent = 'Devnet 接続中…';
+  $('netBanner').style.display = 'none';
+  $('rpcInput').value = rpcUrl;
+  try {
+    connection = new Connection(rpcUrl, { commitment: 'confirmed' });
+    const genesis = await withRetry(() => connection.getGenesisHash(), 'genesis');
+    if (genesis !== DEVNET_GENESIS) {
+      throw new Error(`このエンドポイントは Devnet ではありません（genesis: ${short(genesis, 6)}）。Devnet 限定のため接続を拒否しました。`);
+    }
+    networkOk = true;
+    $('netDot').className = 'dot ok';
+    $('netText').textContent = 'Devnet';
+    let lastSlotUpdate = 0;
+    slotSubId = connection.onSlotChange((s) => {
+      const now = Date.now();
+      if (now - lastSlotUpdate > 400) { $('slotBadge').textContent = `slot: ${s.slot.toLocaleString()}`; lastSlotUpdate = now; }
+    });
+    connection.getSlot().then(s => $('slotBadge').textContent = `slot: ${s.toLocaleString()}`).catch(() => {});
+    await subscribeCharacters();
+    loadTally();
+  } catch (e) {
+    $('netDot').className = 'dot err';
+    $('netText').textContent = '接続エラー';
+    $('netBanner').textContent = `⚠ ${e.message || e}`;
+    $('netBanner').style.display = 'block';
+  }
+  updateVoteButtons();
+}
+
+// ===== ウォレット =====
+function detectProviders() {
+  const list = [];
+  const add = (id, name, provider) => {
+    if (provider && !list.some(p => p.provider === provider)) list.push({ id, name, provider });
+  };
+  if (window.phantom?.solana?.isPhantom) add('phantom', 'Phantom', window.phantom.solana);
+  if (window.solflare?.isSolflare) add('solflare', 'Solflare', window.solflare);
+  if (window.backpack?.isBackpack) add('backpack', 'Backpack', window.backpack);
+  if (window.solana) add('injected', window.solana.isPhantom ? 'Phantom' : 'ブラウザウォレット', window.solana);
+  return list;
+}
+
+function renderWalletList() {
+  const providers = detectProviders();
+  const html = providers.map(p => `<button data-wallet="${p.id}"><span>🔌 ${esc(p.name)}</span><span class="muted">検出済み</span></button>`);
+  if (!providers.length) {
+    html.push(`<div class="muted" style="font-size:12px">拡張ウォレットが見つかりません。<a href="https://phantom.app/" target="_blank" rel="noopener">Phantom</a> や <a href="https://solflare.com/" target="_blank" rel="noopener">Solflare</a> をインストールするか、下のテスト用ウォレットを使用してください。</div>`);
+  }
+  html.push(`<button data-wallet="local"><span>🧪 ローカルテストウォレット（ブラウザ内生成）</span><span class="muted">Devnet 専用</span></button>`);
+  $('walletList').innerHTML = html.join('');
+  $('walletList').querySelectorAll('button').forEach(btn => {
+    btn.onclick = () => { closeModal('walletModal'); connectWallet(btn.dataset.wallet, providers); };
+  });
+}
+function openWalletModal() { renderWalletList(); openModal('walletModal'); }
+
+async function connectWallet(id, providers) {
+  try {
+    if (id === 'local') {
+      let kp;
+      const saved = localStorage.getItem('devnet_local_kp');
+      if (saved) kp = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(saved)));
+      else {
+        kp = Keypair.generate();
+        localStorage.setItem('devnet_local_kp', JSON.stringify(Array.from(kp.secretKey)));
+        toast('新しいテスト用キーペアを生成しました（ブラウザの localStorage に保存）。Devnet 以外では絶対に使用しないでください。', 'warn', 7000);
+      }
+      wallet = {
+        name: 'ローカルテストウォレット',
+        publicKey: kp.publicKey,
+        signTransaction: async (tx) => { tx.sign(kp); return tx; },
+        disconnect: async () => {},
+      };
+    } else {
+      const p = providers.find(x => x.id === id);
+      if (!p) throw new Error('ウォレットが見つかりません');
+      const provider = p.provider;
+      const res = await provider.connect();
+      const pk = provider.publicKey || res?.publicKey;
+      if (!pk) throw new Error('公開鍵を取得できませんでした');
+      wallet = {
+        name: p.name,
+        provider,
+        publicKey: new PublicKey(pk.toString()),
+        signTransaction: (tx) => provider.signTransaction(tx),
+        disconnect: async () => { try { await provider.disconnect(); } catch {} },
+      };
+      // アカウント切替・切断イベント
+      if (provider.on) {
+        provider.on('accountChanged', (newPk) => {
+          if (!wallet || wallet.provider !== provider) return;
+          if (newPk) { wallet.publicKey = new PublicKey(newPk.toString()); onWalletChanged(); toast('ウォレットのアカウントが切り替わりました', 'info'); }
+          else disconnectWallet();
+        });
+        provider.on('disconnect', () => { if (wallet && wallet.provider === provider) disconnectWallet(); });
+      }
+    }
+    toast(`${esc(wallet.name)} に接続しました`, 'ok');
+    onWalletChanged();
+  } catch (e) {
+    console.error(e);
+    toast(`接続に失敗しました: ${esc(e.message || e)}`, 'err');
+  }
+}
+
+function setBalanceDisplay(text) {
+  $('balance').textContent = text;
+  $('hdrBal').textContent = text;
+}
+
+async function onWalletChanged() {
+  const addr = wallet.publicKey.toBase58();
+  $('walletDisconnected').style.display = 'none';
+  $('walletConnected').style.display = 'block';
+  $('connectBtn').style.display = 'none';
+  $('hdrWallet').style.display = 'inline-flex';
+  $('hdrAddr').textContent = short(addr, 4);
+  $('walletName').textContent = wallet.name;
+  $('walletAddr').textContent = addr;
+  $('walletExplorer').href = explorerAddr(addr);
+  $('walletBadge').innerHTML = '<span class="dot ok"></span>接続済み';
+  setBalanceDisplay('-');
+  historyMap.clear(); pendingMap.clear(); knownSigs.clear(); historyBefore = null; pagedMore = false;
+  await subscribeAccount();
+  refreshBalance();
+  loadHistory(true);
+  updateVoteButtons();
+}
+
+async function disconnectWallet() {
+  if (!wallet) return;
+  const w = wallet;
+  wallet = null;
+  await w.disconnect();
+  await unsubscribeAccount();
+  balanceLamports = 0;
+  $('walletDisconnected').style.display = 'block';
+  $('walletConnected').style.display = 'none';
+  $('connectBtn').style.display = '';
+  $('hdrWallet').style.display = 'none';
+  $('walletBadge').innerHTML = '<span class="dot"></span>未接続';
+  $('historyBody').innerHTML = '<tr><td colspan="7" class="empty">ウォレットを接続すると履歴が表示されます</td></tr>';
+  $('moreBtn').style.display = 'none';
+  $('historyStatus').textContent = '';
+  historyMap.clear(); pendingMap.clear();
+  updateVoteButtons();
+}
+
+// アカウント変更をWebSocketで購読 → 着金をリアルタイム反映
+async function subscribeAccount() {
+  await unsubscribeAccount();
+  if (!connection || !networkOk || !wallet) return;
+  accountSubId = connection.onAccountChange(wallet.publicKey, (info) => {
+    balanceLamports = info.lamports;
+    setBalanceDisplay(fmtSol(balanceLamports));
+    updateVoteButtons();
+    scheduleHistoryRefresh();
+  }, 'confirmed');
+}
+async function unsubscribeAccount() {
+  if (accountSubId !== null && connection) { try { await connection.removeAccountChangeListener(accountSubId); } catch {} }
+  accountSubId = null;
+}
+
+async function refreshBalance() {
+  if (!wallet || !networkOk) return;
+  try {
+    balanceLamports = await withRetry(() => connection.getBalance(wallet.publicKey, 'confirmed'), '残高');
+    setBalanceDisplay(fmtSol(balanceLamports));
+    updateVoteButtons();
+  } catch (e) {
+    setBalanceDisplay('エラー');
+    console.error(e);
+  }
+}
+
+async function airdrop() {
+  if (!wallet || !networkOk) return;
+  const btn = $('airdropBtn');
+  btn.disabled = true;
+  $('airdropHint').className = 'hint';
+  $('airdropHint').textContent = 'エアドロップをリクエスト中…';
+  try {
+    const sig = await connection.requestAirdrop(wallet.publicKey, LAMPORTS_PER_SOL);
+    $('airdropHint').innerHTML = `確認待ち… <a href="${explorerTx(sig)}" target="_blank" rel="noopener">${short(sig, 6)}</a>`;
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+    await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+    $('airdropHint').className = 'hint ok';
+    $('airdropHint').innerHTML = `1 SOL を受け取りました ✓ <a href="${explorerTx(sig)}" target="_blank" rel="noopener">Explorer ↗</a>`;
+    refreshBalance();
+    scheduleHistoryRefresh();
+  } catch (e) {
+    console.error(e);
+    $('airdropHint').className = 'hint err';
+    const reason = /faucet is closed|410/i.test(e?.message || '') ? 'この RPC のエアドロップは閉鎖されています'
+      : /429|rate|limit/i.test(e?.message || '') ? 'レート制限に達しました' : esc(e?.message || e);
+    $('airdropHint').innerHTML = `エアドロップに失敗しました（${reason}）。<a href="https://faucet.solana.com/" target="_blank" rel="noopener">faucet.solana.com</a> から取得してください。`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ===== 投票（= 0.01 SOL 送金）処理 =====
+async function sendVote(idx) {
+  const ch = CHARACTERS[idx];
+  if (!networkOk) { toast('Devnet に接続できていません', 'err'); return; }
+  if (!wallet) { openWalletModal(); toast('投票するにはウォレットを接続してください', 'warn'); return; }
+  if (sending || !ch?.pubkey) return;
+  const from = wallet.publicKey;
+  const to = ch.pubkey;
+  const lamports = VOTE_LAMPORTS;
+  if (from.equals(to)) { toast('投票先アドレス自身からは投票できません', 'err'); return; }
+
+  sending = true; sendingIdx = idx;
+  updateVoteButtons();
+  renderSteps();
+  $('log').innerHTML = '';
+  $('sigBox').innerHTML = '';
+  $('progressBar').style.width = '0';
+  flowStart = performance.now();
+  setFlowStatus(`${esc(ch.icon)} ${esc(ch.name)} へ投票中`, 'warn');
+  $('flowCard').scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+  let signature = null;
+  let record = null;
+  let currentStep = 'build';
+  try {
+    // 1. 構築
+    setStep('build', 'active');
+    if (!window.Buffer) {
+      log('Buffer ポリフィルの読み込みを待機中…', 'warn');
+      await Promise.race([new Promise(r => window.addEventListener('buffer-ready', r, { once: true })), sleep(8000)]);
+      if (!window.Buffer) throw new Error('Buffer ポリフィルを読み込めませんでした（cdn.jsdelivr.net への接続を確認してください）');
+    }
+    log(`投票開始: ${esc(ch.icon)} ${esc(ch.name)} に 1 票（${fmtSol(lamports)} SOL）  ${short(from.toBase58(), 6)} → ${short(to.toBase58(), 6)}`, 'info');
+    log('最新の blockhash を取得中…');
+    const { blockhash, lastValidBlockHeight } = await withRetry(() => connection.getLatestBlockhash('confirmed'), 'blockhash');
+    log(`blockhash: ${blockhash} (有効期限ブロック高: ${lastValidBlockHeight.toLocaleString()})`);
+    const tx = new Transaction({ feePayer: from, blockhash, lastValidBlockHeight })
+      .add(SystemProgram.transfer({ fromPubkey: from, toPubkey: to, lamports }));
+    const feeRes = await withRetry(() => connection.getFeeForMessage(tx.compileMessage(), 'confirmed'), '手数料');
+    const fee = feeRes.value ?? DEFAULT_FEE;
+    currentFee = fee;
+    log(`SystemProgram.transfer 命令を作成 / 手数料: ${fmtSol(fee)} SOL`);
+    // 送金元・投票先の残高を 1 リクエストで取得（429 対策）
+    const [accs, rentMin] = await Promise.all([
+      withRetry(() => connection.getMultipleAccountsInfo([from, to], 'confirmed'), '残高'),
+      withRetry(() => connection.getMinimumBalanceForRentExemption(0, 'confirmed'), 'レント'),
+    ]);
+    const bal = accs[0]?.lamports ?? 0;
+    const toBal = accs[1]?.lamports ?? 0;
+    if (bal < lamports + fee) throw new Error(`残高不足: ${fmtSol(bal)} SOL < ${fmtSol(lamports + fee)} SOL`);
+    // Solana のレント規則: 送金後の残高が 0 より大きくレント免除額未満になるアカウントは作れない
+    if (toBal + lamports < rentMin) {
+      throw new Error(`投票先は残高 ${fmtSol(toBal)} SOL の未使用アカウントです。送金後の残高がレント免除額 ${fmtSol(rentMin)} SOL 以上になる必要があります（VOTE_SOL を見直してください）`);
+    }
+    const remain = bal - lamports - fee;
+    if (remain > 0 && remain < rentMin) {
+      throw new Error(`投票後の残高 (${fmtSol(remain)} SOL) がレント免除額 ${fmtSol(rentMin)} SOL 未満になります。faucet で SOL を追加してから投票してください`);
+    }
+    log(`レント免除額チェック OK（最低 ${fmtSol(rentMin)} SOL）`);
+    setStep('build', 'done', stepElapsed());
+
+    // 2. 署名
+    currentStep = 'sign';
+    setStep('sign', 'active', '承認待ち…');
+    log(`${esc(wallet.name)} に署名をリクエストしています… ウォレットで承認してください`, 'warn');
+    const signed = await wallet.signTransaction(tx);
+    const sigBytes = signed.signatures?.[0]?.signature;
+    if (!sigBytes) throw new Error('署名が取得できませんでした');
+    signature = base58(sigBytes);
+    if (!signed.verifySignatures || !signed.verifySignatures()) {
+      log('署名検証メソッドが利用できないため検証をスキップ', 'warn');
+    } else log('署名検証 OK', 'ok');
+    log(`署名完了: ${signature}`, 'ok');
+    setStep('sign', 'done', stepElapsed());
+    $('sigBox').innerHTML = `署名: <a class="mono" href="${explorerTx(signature)}" target="_blank" rel="noopener">${signature}</a>`;
+
+    // 履歴に「送信中」として即時追加
+    record = {
+      key: `${signature}#0`, signature, from: from.toBase58(), to: to.toBase58(), lamports,
+      date: new Date(), status: 'pending', dir: 'out', isNew: true,
+    };
+    pendingMap.set(record.key, record);
+    renderHistory();
+
+    // 3. 送信
+    currentStep = 'send';
+    setStep('send', 'active', '送信中…');
+    const raw = signed.serialize();
+    log(`シリアライズ済みトランザクション (${raw.length} bytes) を Devnet RPC へ送信…`);
+    await connection.sendRawTransaction(raw, { skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 0 });
+    log('RPC がトランザクションを受理しました（プリフライトシミュレーション成功）', 'ok');
+    setStep('send', 'done', stepElapsed());
+
+    // 4-6. 確定まで監視
+    currentStep = 'processed';
+    setStep('processed', 'active', '待機中…');
+    log('承認状況をポーリング中… (processed → confirmed → finalized)');
+    const order = ['processed', 'confirmed', 'finalized'];
+    let reached = -1;
+    let lastRebroadcast = performance.now();
+    let rpcErrors = 0;
+    let voteSlot = null;
+    while (true) {
+      let st;
+      try {
+        const { value } = await connection.getSignatureStatuses([signature], { searchTransactionHistory: false });
+        st = value[0];
+        rpcErrors = 0;
+      } catch (err) {
+        // 一時的な RPC エラー（429 など）では失敗扱いにせずリトライ
+        if (++rpcErrors > 10) throw err;
+        log(`状態取得に失敗、リトライします (${esc(err?.message || err)})`, 'warn');
+        await sleep(1500);
+        continue;
+      }
+      if (st?.err) throw new Error(`トランザクション失敗: ${JSON.stringify(st.err)}`);
+      if (st?.confirmationStatus) {
+        if (st.slot) voteSlot = st.slot;
+        const idx2 = order.indexOf(st.confirmationStatus);
+        while (reached < idx2) {
+          reached++;
+          const name = order[reached];
+          setStep(name, 'done', stepElapsed());
+          const extra = name === 'confirmed' ? ` (投票数 ${st.confirmations ?? '-'} )` : name === 'processed' ? ` slot ${st.slot.toLocaleString()}` : '';
+          log(`${name.toUpperCase()} に到達${extra}`, 'ok');
+          record.status = name;
+          renderHistory();
+          if (reached + 1 < order.length) { currentStep = order[reached + 1]; setStep(currentStep, 'active', '待機中…'); }
+          if (name === 'confirmed') {
+            refreshBalance();
+            loadTally();
+            toast(`✅ ${esc(ch.icon)} ${esc(ch.name)} への投票がオンチェーンに記録されました（confirmed）`, 'ok');
+            showVoteCard({ idx, signature, voter: from.toBase58(), date: record.date, slot: voteSlot, status: 'confirmed' });
+          }
+          if (name === 'finalized') updateVoteCardStatus(signature, 'finalized');
+        }
+        if (reached === order.length - 1) break;
+      } else {
+        // 未着の場合は定期的に再ブロードキャストし、blockhash 期限切れを確認
+        if (performance.now() - lastRebroadcast > 2000) {
+          lastRebroadcast = performance.now();
+          connection.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 0 }).catch(() => {});
+          const height = await connection.getBlockHeight('confirmed').catch(() => null);
+          if (height === null) { await sleep(400); continue; }
+          if (height > lastValidBlockHeight) throw new Error('blockhash の有効期限が切れました。もう一度投票してください。');
+          log(`まだ未処理です… 再送信しました (ブロック高 ${height.toLocaleString()} / 期限 ${lastValidBlockHeight.toLocaleString()})`, 'warn');
+        }
+      }
+      await sleep(reached >= 1 ? 1000 : 400);
+    }
+    const total = stepElapsed();
+    log(`🎉 投票完了（Finalized）合計 ${total}`, 'ok');
+    setFlowStatus(`投票完了 (${total})`, 'ok');
+    toast('🎉 投票トランザクションが Finalized になりました', 'ok');
+  } catch (e) {
+    console.error(e);
+    let msg = e?.message || String(e);
+    if (/reject|denied|cancel/i.test(msg) || e?.code === 4001) msg = 'ユーザーが署名を拒否しました';
+    if (e?.logs) log(`プログラムログ:<br>${e.logs.map(esc).join('<br>')}`, 'err');
+    setStep(currentStep, 'error', 'エラー');
+    log(`❌ ${esc(msg)}`, 'err');
+    setFlowStatus('失敗', 'err');
+    toast(`投票に失敗しました: ${esc(msg)}`, 'err', 7000);
+    if (record) {
+      if (record.status === 'pending' && currentStep === 'send') pendingMap.delete(record.key); // 未送信なら履歴から除外
+      else if (record.status !== 'confirmed' && record.status !== 'finalized') record.status = 'failed'; // 確定済みは失敗にしない（実際の状態は履歴更新で反映）
+      renderHistory();
+    }
+  } finally {
+    sending = false; sendingIdx = -1;
+    updateVoteButtons();
+    refreshBalance();
+    loadTally();
+    scheduleHistoryRefresh(1500);
+  }
+}
+
+// ===== 履歴（オンチェーンデータ） =====
+function extractTransfers(tx) {
+  if (!tx) return [];
+  const ixs = [...tx.transaction.message.instructions];
+  (tx.meta?.innerInstructions || []).forEach(ii => ixs.push(...ii.instructions));
+  return ixs
+    .filter(ix => ix.program === 'system' && ix.parsed && ['transfer', 'transferWithSeed'].includes(ix.parsed.type))
+    .map(ix => ({ from: ix.parsed.info.source, to: ix.parsed.info.destination, lamports: Number(ix.parsed.info.lamports) }));
+}
+
+// 署名 → SOL送金命令の一覧（Tx本体は不変なので一度取得したらキャッシュ）
+const parsedCache = new Map();
+// 公開 Devnet RPC はメソッド単位のレート制限が厳しいため、少数ずつ間隔を空けて取得
+async function fetchTransfers(sigs, onProgress) {
+  const todo = sigs.filter(s => !parsedCache.has(s));
+  const BATCH = 3;
+  for (let i = 0; i < todo.length; i += BATCH) {
+    const chunk = todo.slice(i, i + BATCH);
+    const res = await Promise.all(chunk.map(s =>
+      connection.getParsedTransaction(s, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' }).catch(e => { console.warn(e); return null; })));
+    chunk.forEach((s, j) => { if (res[j]) parsedCache.set(s, extractTransfers(res[j])); }); // null は未反映 → 次回再取得
+    onProgress?.(Math.min(i + BATCH, todo.length), todo.length);
+    if (i + BATCH < todo.length) await sleep(1500);
+  }
+}
+
+async function loadHistory(reset = false) {
+  if (!wallet || !networkOk || historyLoading) return;
+  historyLoading = true;
+  lastHistoryLoad = Date.now();
+  const me = wallet.publicKey.toBase58();
+  $('historyStatus').textContent = '読み込み中…';
+  try {
+    const opts = { limit: HISTORY_PAGE };
+    if (!reset && historyBefore) opts.before = historyBefore;
+    const sigInfos = await withRetry(() => connection.getSignaturesForAddress(wallet.publicKey, opts, 'confirmed'), '履歴');
+    if (!wallet || wallet.publicKey.toBase58() !== me) return; // 途中でウォレットが変わった
+    if (sigInfos.length) historyBefore = sigInfos[sigInfos.length - 1].signature;
+    else if (reset) historyBefore = null;
+
+    const firstLoad = knownSigs.size === 0;
+    const apply = () => sigInfos.forEach(info => {
+      if (!wallet || wallet.publicKey.toBase58() !== me) return;
+      if (!parsedCache.has(info.signature)) return; // 未取得（次回リトライ）
+      const transfers = parsedCache.get(info.signature).filter(t => t.from === me || t.to === me);
+      const status = info.err ? 'failed' : (info.confirmationStatus || 'confirmed');
+      const isNew = reset && !firstLoad && !knownSigs.has(info.signature); // 「さらに読み込む」の過去分は新着扱いしない
+      knownSigs.add(info.signature);
+      transfers.forEach((t, idx) => {
+        const key = `${info.signature}#${idx}`;
+        historyMap.set(key, {
+          key, signature: info.signature, from: t.from, to: t.to, lamports: t.lamports,
+          date: info.blockTime ? new Date(info.blockTime * 1000) : null,
+          status, dir: t.from === me && t.to === me ? 'self' : t.from === me ? 'out' : 'in', isNew,
+        });
+        pendingMap.delete(key);
+        if (isNew && t.to === me && t.from !== me) toast(`📥 ${fmtSol(t.lamports)} SOL を受信しました（${short(t.from)} から）`, 'ok');
+      });
+    });
+    apply(); renderHistory(); // キャッシュ済み分を即時表示
+    await fetchTransfers(sigInfos.map(s => s.signature), (done, total) => {
+      $('historyStatus').textContent = `トランザクション詳細を取得中… ${done}/${total}`;
+      apply(); renderHistory(); // 取得できた分から順次表示
+    });
+    if (!wallet || wallet.publicKey.toBase58() !== me) return;
+    apply();
+    // 初回ロード／過去分読み込みの署名は、詳細取得に失敗したものも既知扱い（後で取得できても「新着受信」と誤通知しない）
+    if (firstLoad || !reset) sigInfos.forEach(i => knownSigs.add(i.signature));
+    if (firstLoad && !knownSigs.size) knownSigs.add('__init__'); // 初回ロード済みの印（以降の新着を通知）
+    if (!(reset && pagedMore)) $('moreBtn').style.display = sigInfos.length === HISTORY_PAGE ? 'inline-block' : 'none';
+    $('historyStatus').textContent = `最終更新: ${new Date().toLocaleTimeString('ja-JP')}`;
+  } catch (e) {
+    console.error(e);
+    $('historyStatus').textContent = `履歴の取得に失敗しました: ${e.message || e}`;
+  } finally {
+    historyLoading = false;
+    if (wallet && wallet.publicKey.toBase58() === me) renderHistory();
+  }
+}
+
+// 頻繁な更新でレート制限に掛からないよう、最低 5 秒間隔に抑える
+function scheduleHistoryRefresh(delay = 1200) {
+  clearTimeout(historyTimer);
+  const wait = Math.max(delay, lastHistoryLoad + 5000 - Date.now());
+  historyTimer = setTimeout(() => refreshLatestHistory(), wait);
+}
+// 先頭ページのみ再取得（ページング位置は維持）
+async function refreshLatestHistory() {
+  if (!wallet || !networkOk) return;
+  if (historyLoading) { scheduleHistoryRefresh(); return; }
+  const savedBefore = historyBefore;
+  await loadHistory(true);
+  if (pagedMore && savedBefore) historyBefore = savedBefore; // 追加読み込み済みの位置を維持
+}
+
+function renderHistory() {
+  if (!wallet) return;
+  const rows = [...historyMap.values()];
+  pendingMap.forEach((r, k) => { if (!historyMap.has(k)) rows.push(r); });
+  rows.sort((a, b) => (b.date?.getTime() ?? Infinity) - (a.date?.getTime() ?? Infinity));
+  const isVote = (r) => r.dir === 'out' && charIndexOf(r.to) >= 0;
+  const filtered = rows.filter(r =>
+    historyFilter === 'all' ? true :
+    historyFilter === 'vote' ? isVote(r) :
+    r.dir === historyFilter || r.dir === 'self');
+  if (!filtered.length) {
+    const emptyMsg = historyFilter === 'vote' ? 'まだ投票記録はありません' : 'SOL の送受信履歴はまだありません';
+    $('historyBody').innerHTML = `<tr><td colspan="7" class="empty">${historyLoading ? '読み込み中…' : emptyMsg}</td></tr>`;
+    return;
+  }
+  const dirLabel = { out: '送信', in: '受信', self: '自己送金' };
+  const addrCell = (a) => {
+    const ci = charIndexOf(a);
+    const label = ci >= 0 ? `${esc(CHARACTERS[ci].icon)} ${short(a, 4)}` : short(a, 5);
+    return `<td class="mono addr" data-copy="${a}" title="${a}（クリックでコピー）">${label}</td>`;
+  };
+  $('historyBody').innerHTML = filtered.map(r => {
+    const ci = r.dir === 'out' ? charIndexOf(r.to) : -1;
+    const kind = ci >= 0
+      ? `<span class="dir vote" style="--c:${esc(CHARACTERS[ci].color)}">🗳️ 投票: ${esc(CHARACTERS[ci].icon)} ${esc(CHARACTERS[ci].name)}${r.lamports >= VOTE_LAMPORTS ? `（${Math.floor(r.lamports / VOTE_LAMPORTS)}票）` : ''}</span>`
+      : `<span class="dir ${r.dir}">${dirLabel[r.dir]}</span>`;
+    return `
+    <tr class="${r.isNew ? 'new' : ''}">
+      <td>${fmtDate(r.date)}</td>
+      <td>${kind}</td>
+      ${addrCell(r.from)}
+      ${addrCell(r.to)}
+      <td class="amt ${r.dir}">${r.dir === 'out' ? '-' : r.dir === 'in' ? '+' : ''}${fmtSol(r.lamports)}</td>
+      <td><span class="st ${r.status}">${STATUS_LABEL[r.status] || r.status}</span></td>
+      <td><a class="mono" href="${explorerTx(r.signature)}" target="_blank" rel="noopener">${short(r.signature, 5)} ↗</a></td>
+    </tr>`;
+  }).join('');
+  rows.forEach(r => r.isNew = false);
+}
+
+// ===== イベント =====
+$('connectBtn').onclick = openWalletModal;
+$('connectBtn2').onclick = openWalletModal;
+$('hdrDisconnect').onclick = disconnectWallet;
+$('hdrAddr').onclick = () => wallet && copy(wallet.publicKey.toBase58(), 'アドレスをコピーしました');
+$('chars').addEventListener('click', (e) => {
+  const v = e.target.closest('[data-vote]');
+  if (v) { sendVote(Number(v.dataset.vote)); return; }
+});
+document.addEventListener('click', (e) => {
+  const c = e.target.closest('[data-copy]');
+  if (c) copy(c.dataset.copy, 'アドレスをコピーしました');
+});
+$('tallyRefreshBtn').onclick = () => loadTally(true);
+$('refreshBtn').onclick = () => { refreshBalance(); refreshLatestHistory(); };
+$('airdropBtn').onclick = airdrop;
+$('disconnectBtn').onclick = disconnectWallet;
+$('copyAddrBtn').onclick = () => copy(wallet.publicKey.toBase58(), 'アドレスをコピーしました');
+$('historyRefreshBtn').onclick = refreshLatestHistory;
+$('moreBtn').onclick = () => { pagedMore = true; loadHistory(false); };
+$('tabs').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  historyFilter = b.dataset.f;
+  $('tabs').querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
+  renderHistory();
+});
+$('rpcSaveBtn').onclick = async () => {
+  const url = $('rpcInput').value.trim();
+  if (!/^https?:\/\//.test(url)) { toast('http(s):// で始まる URL を入力してください', 'err'); return; }
+  rpcUrl = url;
+  localStorage.setItem('devnet_rpc', url);
+  await initConnection();
+  if (networkOk) { toast('RPC を切り替えました', 'ok'); if (wallet) onWalletChanged(); }
+};
+$('rpcResetBtn').onclick = async () => {
+  rpcUrl = DEFAULT_RPC; localStorage.removeItem('devnet_rpc');
+  await initConnection();
+  if (networkOk && wallet) onWalletChanged();
+};
+
+// 定期的に送信中/未確定の状態を更新（確定状態の反映）
+setInterval(() => {
+  if (!wallet || sending) return;
+  const unsettled = [...historyMap.values(), ...pendingMap.values()].some(r => r.status !== 'finalized' && r.status !== 'failed');
+  if (unsettled) refreshLatestHistory();
+}, 8000);
+// WebSocket 購読の取りこぼし対策として、集計を低頻度で再取得（タブ表示中のみ）
+setInterval(() => { if (!document.hidden && !sending) loadTally(); }, TALLY_POLL_MS);
+
+// ===== 起動 =====
+renderCharacters();
+renderSteps();
+log('待機中: 推しキャラの「投票する」ボタンを押してください', 'info');
+setFlowStatus('待機中');
+updateVoteButtons();
+initConnection();
+})();
+</script>
+</body>
+</html>
