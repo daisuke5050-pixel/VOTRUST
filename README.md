@@ -1,8 +1,8 @@
-# SolVote - 改ざんできない透明キャラ投票
+# VOTRUST - 改ざんできない透明キャラ投票
 
 **Solana Devnet上に直接記録される、運営も操作不可能なリアルタイム投票**
 
-SolVote は、3 体のキャラクターから推しを選び、**0.01 SOL（Devnet）を送金することで 1 票を投じる**投票アプリです。
+VOTRUST は、3 体のキャラクターから推しを選び、**0.01 SOL（Devnet）を送金することで 1 票を投じる**投票アプリです。
 `index.html` 1 ファイルだけで動作し、外部サーバー・データベース・スマートコントラクトは一切使いません。
 投票はすべて Solana Devnet 上の通常の送金トランザクションとして記録され、集計もブロックチェーン上の残高から直接計算されます。
 
@@ -219,7 +219,7 @@ python3 -m http.server 8000    # macOS / Linux
 ### 1. GitHub にリポジトリを作成
 
 1. <https://github.com/new> を開く
-2. Repository name に任意の名前（例: `solvote`）を入力
+2. Repository name に任意の名前（例: `VOTRUST`）を入力
 3. **Public** を選択（無料プランで GitHub Pages を使う場合は Public が必要）
 4. 「Create repository」をクリック
 
@@ -231,7 +231,7 @@ Git がない場合は <https://git-scm.com/downloads> からインストール�
 cd solana_test
 git init
 git add index.html README.md
-git commit -m "Add SolVote (Solana Devnet character voting app)"
+git commit -m "Add VOTRUST (Solana Devnet character voting app)"
 git branch -M main
 git remote add origin https://github.com/<ユーザー名>/<リポジトリ名>.git
 git push -u origin main
